@@ -3,7 +3,10 @@ using System.Threading;
 
 namespace RDC
 {
-    static class Shared
+    /// <summary>
+    /// Shared utility functions
+    /// </summary>
+    public static class Shared
     {
         private static int _curr;
         /// <summary>
@@ -20,6 +23,13 @@ namespace RDC
                     return s;
             }
         }
+        /// <summary>
+        /// Compares the content of two byte arrays; returns false
+        /// (not equal) if null
+        /// </summary>
+        /// <param name="self">First array</param>
+        /// <param name="b">Second array</param>
+        /// <returns>True if same content</returns>
         public static bool AreEqual(this byte[] self, byte[] b)
         {
             if (b == null || self.Length != b.Length)
@@ -64,7 +74,7 @@ namespace RDC
         /// </summary>
         /// <param name="stream">Open stream</param>
         /// <param name="value">Integer</param>
-        public static void WriteInt(this Stream stream, int value)
+        public static void WriteTo(this int value, Stream stream)
         {
             stream.WriteByte((byte)((value >> 24) & 0xff));
             stream.WriteByte((byte)((value >> 16) & 0xff));

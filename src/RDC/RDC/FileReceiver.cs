@@ -10,7 +10,7 @@ namespace RDC
     /// the PhD thesis of the RSYNC application author. This algorihtm uses the MD5 cryptografic hash
     /// function and a rolling checksum hash function. Each file transfer takes makes a maximum of
     /// two passes on the original file. This file transfer algorithm is <b>not</b> compatible with
-    /// the RSYNC algorihtm described in the paper. Maximum file size of 4GiB.
+    /// the RSYNC algorihtm described in the paper. Maximum file size of 2GiB.
     /// 
     /// This algorithm does a lot of work in the receiving end, in order to avoid timeouts the network
     /// stream timeout values are temporally increased. The network stream provided must support this
@@ -19,7 +19,7 @@ namespace RDC
     public static class FileReceiver
     {
         private const int BlockSize = 5205; // RSYNC fixed block size
-        private const int BufferSize = 65536; // Actual useful buffer size
+        private const int BufferSize = 65535; // Actual useful buffer size
         private static readonly MD5CryptoServiceProvider Md5 = new MD5CryptoServiceProvider();
         /// <summary>
         /// RSYNC file transfer with exchange of delta representatives (receiving end)
@@ -28,10 +28,8 @@ namespace RDC
         /// <param name="path">Path of file to transfer, must exist</param>
         public static void Receive(Stream stream, string path)
         {
-            var rollingChecksum = new C3C4TaylorsRollingChecksum(stream, BlockSize);
-            // Read hash of whole file
-            var fileHash = new byte[16];
-            stream.ForceRead(fileHash, 0, 16);
+            // Receive new file size
+            int fileSizeNew = stream.ReadInt();
             int prevReadTimeout = stream.ReadTimeout;
             int prevWriteTimeout = stream.WriteTimeout;
             string tempPath = Shared.TempFile();
@@ -41,27 +39,25 @@ namespace RDC
             {
                 using (var fileStreamOld = new FileStream(path, FileMode.Open, FileAccess.Read))
                 {
+                    Dictionary<int, List<Chunk>> remoteChunks = ReceiveChunkInformation(stream, fileSizeNew);
+                    stream.ReadTimeout = stream.WriteTimeout = fileSizeNew;
+                    List<Chunk> chunks = DiscoverChunksInLocalFile(remoteChunks, new C3C4TaylorsRollingChecksum(fileStreamOld, BlockSize), fileStreamOld,
+                                                                    fileSizeOld, buffer);
+                    stream.ReadTimeout = prevReadTimeout;
+                    stream.WriteTimeout = prevWriteTimeout;
+                    UniteCloseChunks(chunks);
+                    int chunksToRequest = AddChunksNotFoundInfo(chunks);
+                    chunksToRequest += AddChunkNotFoundTail(chunks, fileSizeNew);
                     using (var fileStreamNew = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write))
                     {
-                        int fileSizeNew = stream.ReadInt();
-                        stream.ReadTimeout = stream.WriteTimeout = fileSizeNew;
-                        Dictionary<int, List<Chunk>> remoteChunks = ReceiveChunkInformation(stream, fileSizeNew);
-                        List<Chunk> chunks = DiscoverChunksInLocalFile(remoteChunks, rollingChecksum, fileStreamOld,
-                                                                       fileSizeOld, buffer);
-                        UniteCloseChunks(chunks);
-                        int chunksToRequest = AddChunksNotFoundInfo(chunks);
-                        chunksToRequest += AddChunkNotFoundTail(chunks, fileSizeNew);
                         SendAndReceiveChunksAndRebuildFile(stream, chunks, fileStreamNew, fileStreamOld, chunksToRequest, buffer);
-                        fileStreamNew.Close();
                     }
                 }
             }
             catch
             {
-                File.Delete(tempPath);
-            }
-            finally
-            {
+                if (File.Exists(tempPath))
+                    File.Delete(tempPath);
                 stream.ReadTimeout = prevReadTimeout;
                 stream.WriteTimeout = prevWriteTimeout;
             }
@@ -71,6 +67,9 @@ namespace RDC
             {
                 fileReceivedHash = Md5.ComputeHash(fs);
             }
+            // Receive hash of whole file
+            var fileHash = new byte[16];
+            stream.ForceRead(fileHash, 0, 16);
             if (!fileReceivedHash.AreEqual(fileHash))
             {
                 File.Delete(tempPath);
@@ -191,7 +190,7 @@ namespace RDC
         }
         private static void SendAndReceiveChunksAndRebuildFile(Stream stream, List<Chunk> chunks, Stream fileStreamNew, Stream fileStreamOld, int chunksToRequest, byte[] buffer)
         {
-            stream.WriteInt(chunksToRequest);
+            chunksToRequest.WriteTo(stream);
             chunks.Sort((i1, i2) => i1.NewStart.CompareTo(i2.NewStart));
             foreach (var chunk in chunks)
             {
@@ -203,8 +202,8 @@ namespace RDC
                 }
                 else // From remote file
                 {
-                    stream.WriteInt(chunk.NewStart);
-                    stream.WriteInt(chunk.Length);
+                    chunk.NewStart.WriteTo(stream);
+                    chunk.Length.WriteTo(stream);
                     fileStreamNew.Seek(chunk.NewStart, 0);
                     stream.ReadWrite(fileStreamNew, chunk.Length, buffer);
                 }
